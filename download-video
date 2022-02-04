@@ -1,0 +1,85 @@
+#!/bin/bash
+
+if [ -z $1 ]; then
+echo "error: no command"
+exit 1
+fi
+
+if [ $1 = "help" ] || [ $1 = "-help" ] || [ $1 = "--help" ]; then
+echo 'Usage:
+  $ download-video [URL...]
+Dependency:
+  Youtube => (youtube-dl, ffmpeg)
+  Bilibili => (annie, curl)
+  m3u8 => (ffmpeg)'
+exit 0
+fi
+
+# set up env
+if [ -z $RETRY_TOTAL_COUNT ]; then
+  RETRY_TOTAL_COUNT=1000
+fi
+# when failed, sleep for 10+(0~20) s
+if [ -z $SLEEP_BASE ]; then
+  SLEEP_BASE=10
+fi
+if [ -z $SLEEP_RAMDOM_OFFSET ]; then
+  SLEEP_RAMDOM_OFFSET=20
+fi
+
+for URL in $@; do
+	DONE=0
+	RETRY_COUNT=0
+	# auto restart when failed
+	while [ $DONE = 0 ]; do
+		case $URL in
+			*youtube.com* )
+				PROXY_FLAG=""
+				if [ ! -z $HTTP_PROXY ]; then
+				  PROXY_FLAG="--proxy $HTTP_PROXY"
+				fi
+				youtube-dl -f bestvideo+bestaudio/best --merge-output-format mkv --sub-lang en --convert-subs srt --write-sub --write-auto-sub --embed-subs $PROXY_FLAG $URL 
+				;;
+			*bilibili.com* )
+				annie -C -p $URL
+				;;
+			*b23.tv* )
+				# using curl to convert short links to full links
+				# reference: https://github.com/iawia002/annie/issues/873
+				annie -C -p "$(curl -sLI $URL | grep location | grep http | cut -c 11- | cut -f1 -d "&")"
+				;;
+			*m3u8* )
+				PROXY_FLAG=""
+				if [ ! -z $HTTP_PROXY ]; then
+				  PROXY_FLAG="-http_proxy $HTTP_PROXY"
+				fi
+				M3U8_UUID=$(cat /proc/sys/kernel/random/uuid)
+				# reference：https://gist.github.com/tzmartin/fb1f4a8e95ef5fb79596bd4719671b5d
+				ffmpeg -i "$URL" -bsf:a aac_adtstoasc -vcodec copy -c copy -crf 50 "m3u8-"$M3U8_UUID".mp4" $PROXY_FLAG
+				;;
+			* )
+				echo "Unsupported URL: $URL"
+				echo "Abort."
+				exit 1
+				;;
+		esac
+	
+		if [ $? = 0 ]; then
+			echo "Downloaded: " $URL
+			DONE=1
+		else
+			echo "[$RETRY_COUNT]Failed to download:" $URL
+			RETRY_SLEEP_SECONDS=$(($SLEEP_BASE + $RANDOM%$SLEEP_RAMDOM_OFFSET))
+			RETRY_COUNT=$(( "RETRY_COUNT" + 1 ))
+			if [ $RETRY_COUNT = $RETRY_TOTAL_COUNT ]; then
+				echo "Abort. Task failed for $RETRY_COUNT times."
+				exit 1
+			fi
+			echo "Sleep" $RETRY_SLEEP_SECONDS"s"	
+			sleep $RETRY_SLEEP_SECONDS
+		fi
+	done
+done
+
+echo ""
+echo "All tasks were finished."
